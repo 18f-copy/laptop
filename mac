@@ -1,0 +1,240 @@
+#!/bin/sh
+
+# Welcome to the 18F laptop script!
+# Be prepared to turn your laptop (or desktop)
+# into an awesome development machine.
+
+fancy_echo() {
+  # shellcheck disable=SC2039
+  local fmt="$1"; shift
+
+  # shellcheck disable=SC2059
+  printf "\n$fmt\n" "$@"
+}
+
+append_to_file() {
+  # shellcheck disable=SC2039
+  local file="$1"
+  # shellcheck disable=SC2039
+  local text="$2"
+
+  if [ "$file" = "$HOME/.zshrc" ]; then
+    if [ -w "$HOME/.zshrc.local" ]; then
+      file="$HOME/.zshrc.local"
+    else
+      file="$HOME/.zshrc"
+    fi
+  fi
+
+  if ! grep -qs "^$text$" "$file"; then
+    printf "\n%s\n" "$text" >> "$file"
+  fi
+}
+
+# shellcheck disable=SC2154
+trap 'ret=$?; test $ret -ne 0 && printf "failed\n\n" >&2; exit $ret' EXIT
+
+set -e
+
+if [ ! -d "$HOME/.bin/" ]; then
+  mkdir "$HOME/.bin"
+fi
+
+if [ ! -f "$HOME/.zshrc" ]; then
+  touch "$HOME/.zshrc"
+fi
+
+# shellcheck disable=SC2016
+append_to_file "$HOME/.zshrc" 'export PATH="$HOME/.bin:$PATH"'
+
+case "$SHELL" in
+  */zsh) : ;;
+  *)
+    if [ -z "$CI" ]; then
+      fancy_echo "Changing your shell to zsh ..."
+      chsh -s "$(which zsh)"
+    else
+      fancy_echo "CI System detected, will not change shells"
+    fi
+    ;;
+esac
+
+brew_is_installed() {
+  brew list -1 | grep -Fqx "$1"
+}
+
+gem_install_or_update() {
+  if gem list "$1" | grep "^$1 ("; then
+    fancy_echo "Updating %s ..." "$1"
+    gem update "$@"
+  else
+    fancy_echo "Installing %s ..." "$1"
+    gem install "$@"
+  fi
+}
+
+app_is_installed() {
+  # shellcheck disable=SC2039
+  local app_name
+  app_name=$(echo "$1" | cut -d'-' -f1)
+  find /Applications -iname "$app_name*" -maxdepth 1 | egrep '.*' > /dev/null
+}
+
+if ! command -v brew >/dev/null; then
+  fancy_echo "Installing Homebrew ..."
+    curl -fsS \
+      'https://raw.githubusercontent.com/Homebrew/install/master/install' | ruby
+
+    # shellcheck disable=SC2016
+    append_to_file "$HOME/.zshrc" 'export PATH="/usr/local/bin:$PATH"'
+else
+  fancy_echo "Homebrew already installed. Skipping ..."
+fi
+
+# Remove brew-cask since it is now installed as part of brew tap caskroom/cask.
+# See https://github.com/caskroom/homebrew-cask/releases/tag/v0.60.0
+if brew_is_installed 'brew-cask'; then
+  brew uninstall --force 'brew-cask'
+  brew untap caskroom/versions
+fi
+
+fancy_echo "Updating Homebrew formulas ..."
+brew update
+
+fancy_echo "Verifying the Homebrew installation..."
+if brew doctor; then
+  fancy_echo "Your Homebrew installation is good to go."
+else
+  fancy_echo "Your Homebrew installation reported some errors or warnings."
+  echo "If the warnings are related to Python, you can ignore them."
+  echo "Otherwise, review the Homebrew messages to see if any action is needed."
+fi
+
+if brew_is_installed 'cloudfoundry-cli'; then
+  brew uninstall --force cloudfoundry-cli
+fi
+
+fancy_echo "Installing formulas and casks from the Brewfile ..."
+brew bundle
+
+# shellcheck disable=SC2016
+append_to_file "$HOME/.zshrc" 'eval "$(hub alias -s)"'
+
+fancy_echo 'Checking on Node.js installation...'
+
+if ! brew_is_installed "node"; then
+  if command -v n > /dev/null; then
+    fancy_echo "We recommend using \`nvm\` and not \`n\`."
+    fancy_echo "See https://pages.18f.gov/frontend/#install-npm"
+  elif ! command -v nvm > /dev/null; then
+    fancy_echo 'Installing nvm and lts Node.js and npm...'
+    curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.32.1/install.sh | bash
+    export NVM_DIR="$HOME/.nvm"
+    # shellcheck source=/dev/null
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    nvm install node --lts
+  else
+    fancy_echo 'version manager detected.  Skipping...'
+  fi
+else
+  brew bundle --file=- <<EOF
+  brew 'node'
+EOF
+fi
+
+fancy_echo '...Finished Node.js installation checks.'
+
+
+fancy_echo 'Checking on Python installation...'
+
+if ! brew_is_installed "python3"; then
+  brew bundle --file=- <<EOF
+  brew 'pyenv'
+  brew 'pyenv-virtualenv'
+  brew 'pyenv-virtualenvwrapper'
+EOF
+  # shellcheck disable=SC2016
+  append_to_file "$HOME/.zshrc" 'if which pyenv > /dev/null; then eval "$(pyenv init -)"; fi'
+  # shellcheck disable=SC2016
+  append_to_file "$HOME/.zshrc" 'if which pyenv-virtualenv-init > /dev/null; then eval "$(pyenv virtualenv-init -)"; fi'
+
+  # pyenv currently doesn't have a convenience version to use, e.g., "latest",
+  # so we check for the latest version against Homebrew instead.
+  latest_python_3="$(brew info python3 | egrep -o "3\.\d+\.\d+" | head -1)"
+
+  if ! pyenv versions | ag "$latest_python_3" > /dev/null; then
+    pyenv install "$latest_python_3"
+    pyenv global "$latest_python_3"
+    pyenv rehash
+  fi
+else
+  brew bundle --file=- <<EOF
+  brew 'python3'
+EOF
+fi
+
+if ! brew_is_installed "pyenv-virtualenvwrapper"; then
+  if ! pip3 list | ag "virtualenvwrapper" > /dev/null; then
+    fancy_echo 'Installing virtualenvwrapper...'
+    pip3 install virtualenvwrapper
+    append_to_file "$HOME/.zshrc" 'export VIRTUALENVWRAPPER_PYTHON=/usr/local/bin/python3'
+    append_to_file "$HOME/.zshrc" 'export VIRTUALENVWRAPPER_VIRTUALENV=/usr/local/bin/virtualenv'
+    append_to_file "$HOME/.zshrc" 'source /usr/local/bin/virtualenvwrapper.sh'
+  fi
+fi
+
+fancy_echo '...Finished Python installation checks.'
+
+
+fancy_echo 'Checking on Ruby installation...'
+
+append_to_file "$HOME/.gemrc" 'gem: --no-document'
+
+if ! command -v rbenv >/dev/null; then
+  if ! command -v rvm >/dev/null; then
+    fancy_echo 'Installing RVM and the latest Ruby...'
+    curl -L https://get.rvm.io | bash -s stable --ruby --auto-dotfiles --autolibs=enable
+    # shellcheck source=/dev/null
+    . ~/.rvm/scripts/rvm
+  else
+    local_version="$(rvm -v 2> /dev/null | awk '$2 != ""{print $2}')"
+    latest_version="$(curl -s https://raw.githubusercontent.com/wayneeseguin/rvm/stable/VERSION)"
+    if [ "$local_version" != "$latest_version" ]; then
+      fancy_echo 'Upgrading RVM...'
+      rvm get stable --auto-dotfiles --autolibs=enable --with-gems="bundler"
+    else
+      fancy_echo "Already using the latest version of RVM. Skipping..."
+    fi
+  fi
+fi
+
+fancy_echo 'Updating Rubygems...'
+gem update --system
+
+gem_install_or_update 'bundler'
+
+fancy_echo "Configuring Bundler ..."
+number_of_cores=$(sysctl -n hw.ncpu)
+bundle config --global jobs $((number_of_cores - 1))
+
+fancy_echo '...Finished Ruby installation checks.'
+
+if [ -f "$HOME/.laptop.local" ]; then
+  # shellcheck source=/dev/null
+  . "$HOME/.laptop.local"
+fi
+
+append_to_file "$HOME/.rvmrc" 'rvm_auto_reload_flag=2'
+append_to_file "$HOME/.rvm/gemsets/global.gems" 'bundler'
+
+if app_is_installed 'GitHub'; then
+  fancy_echo "It looks like you've already configured your GitHub SSH keys."
+  fancy_echo "If not, you can do it by signing in to the GitHub app on your Mac."
+elif [ ! -f "$HOME/.ssh/github_rsa.pub" ]; then
+  open ~/Applications/GitHub\ Desktop.app
+fi
+
+# TODO: Change to master for merge
+curl -s https://raw.githubusercontent.com/18F/laptop/seekret/seekrets-install | sh -
+
+fancy_echo 'All done!'
