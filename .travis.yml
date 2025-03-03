@@ -1,0 +1,13 @@
+os:
+  - osx
+
+language: sh
+
+before_script:
+  - brew install shellcheck
+  - git clone https://github.com/sstephenson/bats.git /tmp/bats && pushd /tmp/bats && ./install.sh /usr/local && popd
+
+script:
+  - shellcheck mac
+  - shellcheck seekrets-install
+  - sh -C "mac"
