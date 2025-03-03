@@ -1,0 +1,11 @@
+os:
+  - osx
+
+language: sh
+
+before_script:
+  - brew install shellcheck
+
+script:
+  - shellcheck mac
+  - sh -C "mac"
