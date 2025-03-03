@@ -1,0 +1,19 @@
+#!/bin/sh
+
+fancy_echo "Running your customizations from ~/.laptop.local ..."
+
+brew bundle --file=- <<EOF
+cask 'atom'
+cask 'firefox'
+cask 'iterm2'
+cask 'spectacle'
+
+brew 'vim'
+brew 'ctags'
+brew 'tmux'
+brew 'reattach-to-user-namespace'
+
+brew 'go'
+EOF
+
+append_to_file "$HOME/.zshrc" 'export PATH="$PATH:/usr/local/opt/go/libexec/bin"'
